@@ -12,8 +12,13 @@ import type { PanelConfig } from '@/types';
 import type { StatusPanel } from './StatusPanel';
 import type { ExtensionManifest } from '@/extensions/schema';
 import { parseExtensionManifest } from '@/extensions/schema';
-import { listExtensions, removeExtension, setEnabled, upsertExtension } from '@/extensions/storage/web';
-import { initExtensions } from '@/extensions/registry';
+import {
+  addOrUpdateExtension,
+  getInstalledExtensions,
+  removeInstalledExtension,
+  setInstalledExtensionEnabled,
+  subscribeExtensions,
+} from '@/extensions/registry';
 
 const GEAR_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>`;
 
@@ -50,6 +55,7 @@ export class UnifiedSettings {
   private extensionsError = '';
   private extensionsSuccess = '';
   private escapeHandler: (e: KeyboardEvent) => void;
+  private unsubscribeExtensions?: () => void;
 
   constructor(config: UnifiedSettingsConfig) {
     this.config = config;
@@ -233,7 +239,11 @@ export class UnifiedSettings {
 
     this.render();
     document.body.appendChild(this.overlay);
-    void this.loadExtensions();
+    this.unsubscribeExtensions = subscribeExtensions(() => {
+      this.extensions = getInstalledExtensions();
+      this.render();
+    });
+    this.extensions = getInstalledExtensions();
   }
 
   public open(tab?: TabId): void {
@@ -266,6 +276,7 @@ export class UnifiedSettings {
 
   public destroy(): void {
     document.removeEventListener('keydown', this.escapeHandler);
+    this.unsubscribeExtensions?.();
     this.overlay.remove();
   }
 
@@ -329,11 +340,6 @@ export class UnifiedSettings {
     if (!this.config.isDesktopApp) this.updateAiStatus();
   }
 
-  private async loadExtensions(): Promise<void> {
-    this.extensions = await listExtensions();
-    this.extensionsError = '';
-    if (this.activeTab === 'general') this.render();
-  }
 
   private async handleExtensionAdd(): Promise<void> {
     const input = this.overlay.querySelector<HTMLTextAreaElement>('#us-extension-manifest');
@@ -341,12 +347,10 @@ export class UnifiedSettings {
 
     try {
       const manifest = parseExtensionManifest(JSON.parse(input.value));
-      await upsertExtension(manifest);
+      await addOrUpdateExtension(manifest);
       this.extensionsSuccess = `Added ${manifest.name}`;
       this.extensionsError = '';
       input.value = '';
-      await this.loadExtensions();
-      await initExtensions();
       refreshFeedsWithExtensions();
     } catch (error) {
       this.extensionsSuccess = '';
@@ -358,16 +362,12 @@ export class UnifiedSettings {
   private async handleExtensionToggle(id: string): Promise<void> {
     const extension = this.extensions.find(item => item.id === id);
     if (!extension) return;
-    await setEnabled(id, !extension.enabled);
-    await this.loadExtensions();
-    await initExtensions();
+    await setInstalledExtensionEnabled(id, !extension.enabled);
     refreshFeedsWithExtensions();
   }
 
   private async handleExtensionDelete(id: string): Promise<void> {
-    await removeExtension(id);
-    await this.loadExtensions();
-    await initExtensions();
+    await removeInstalledExtension(id);
     refreshFeedsWithExtensions();
   }
 

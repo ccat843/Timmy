@@ -1,8 +1,23 @@
 import type { Feed } from '@/types';
 import type { ExtensionManifest } from '@/extensions/schema';
-import { listExtensions } from '@/extensions/storage/web';
+import { listExtensions, removeExtension, setEnabled, upsertExtension } from '@/extensions/storage/web';
 
 let extensions: ExtensionManifest[] = [];
+let initPromise: Promise<ExtensionManifest[]> | null = null;
+let initialized = false;
+
+const listeners = new Set<() => void>();
+
+function notify(): void {
+  for (const listener of listeners) listener();
+}
+
+export function subscribeExtensions(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
 
 function feedIdentifier(feed: Feed): string {
   const extId = (feed as Feed & { id?: string }).id;
@@ -11,7 +26,22 @@ function feedIdentifier(feed: Feed): string {
 }
 
 export async function initExtensions(): Promise<ExtensionManifest[]> {
+  if (initialized) return extensions;
+  if (!initPromise) {
+    initPromise = listExtensions().then((items) => {
+      extensions = items;
+      initialized = true;
+      notify();
+      return extensions;
+    });
+  }
+  return initPromise;
+}
+
+export async function reloadExtensions(): Promise<ExtensionManifest[]> {
   extensions = await listExtensions();
+  initialized = true;
+  notify();
   return extensions;
 }
 
@@ -19,8 +49,25 @@ export function getInstalledExtensions(): ExtensionManifest[] {
   return extensions;
 }
 
+export async function addOrUpdateExtension(manifest: ExtensionManifest): Promise<void> {
+  await upsertExtension(manifest);
+  await reloadExtensions();
+}
+
+export async function removeInstalledExtension(id: string): Promise<void> {
+  await removeExtension(id);
+  await reloadExtensions();
+}
+
+export async function setInstalledExtensionEnabled(id: string, enabled: boolean): Promise<void> {
+  await setEnabled(id, enabled);
+  await reloadExtensions();
+}
+
 export function setExtensionsForTesting(items: ExtensionManifest[]): void {
   extensions = items;
+  initialized = true;
+  notify();
 }
 
 export function getMergedFeeds(baseFeeds: Record<string, Feed[]>): Record<string, Feed[]> {

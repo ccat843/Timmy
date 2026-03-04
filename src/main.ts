@@ -211,7 +211,7 @@ import { loadDesktopSecrets } from '@/services/runtime-config';
 import { applyStoredTheme } from '@/utils/theme-manager';
 import { SITE_VARIANT } from '@/config/variant';
 import { refreshFeedsWithExtensions } from '@/config/feeds';
-import { initExtensions } from '@/extensions/registry';
+import { initExtensions, subscribeExtensions } from '@/extensions/registry';
 import { clearChunkReloadGuard, installChunkReloadGuard } from '@/bootstrap/chunk-reload';
 
 // Auto-reload on stale chunk 404s after deployment (Vite fires this for modulepreload failures).
@@ -251,6 +251,10 @@ requestAnimationFrame(() => {
 
 // Clear stale settings-open flag (survives ungraceful shutdown)
 localStorage.removeItem('wm-settings-open');
+
+subscribeExtensions(() => {
+  refreshFeedsWithExtensions();
+});
 
 const extensionsReady = initExtensions().then(() => {
   refreshFeedsWithExtensions();
