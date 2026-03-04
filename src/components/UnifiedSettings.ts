@@ -1,4 +1,4 @@
-import { FEEDS, INTEL_SOURCES, SOURCE_REGION_MAP } from '@/config/feeds';
+import { FEEDS, INTEL_SOURCES, SOURCE_REGION_MAP, refreshFeedsWithExtensions } from '@/config/feeds';
 import { PANEL_CATEGORY_MAP } from '@/config/panels';
 import { SITE_VARIANT } from '@/config/variant';
 import { LANGUAGES, changeLanguage, getCurrentLanguage, t } from '@/services/i18n';
@@ -10,6 +10,10 @@ import { escapeHtml } from '@/utils/sanitize';
 import { trackLanguageChange } from '@/services/analytics';
 import type { PanelConfig } from '@/types';
 import type { StatusPanel } from './StatusPanel';
+import type { ExtensionManifest } from '@/extensions/schema';
+import { parseExtensionManifest } from '@/extensions/schema';
+import { listExtensions, removeExtension, setEnabled, upsertExtension } from '@/extensions/storage/web';
+import { initExtensions } from '@/extensions/registry';
 
 const GEAR_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>`;
 
@@ -42,6 +46,9 @@ export class UnifiedSettings {
   private sourceFilter = '';
   private activePanelCategory = 'all';
   private panelFilter = '';
+  private extensions: ExtensionManifest[] = [];
+  private extensionsError = '';
+  private extensionsSuccess = '';
   private escapeHandler: (e: KeyboardEvent) => void;
 
   constructor(config: UnifiedSettingsConfig) {
@@ -145,6 +152,23 @@ export class UnifiedSettings {
         this.updateSourcesCounter();
         return;
       }
+
+      if (target.closest('#us-extension-add')) {
+        void this.handleExtensionAdd();
+        return;
+      }
+
+      const extensionToggle = target.closest<HTMLElement>('[data-extension-toggle]');
+      if (extensionToggle?.dataset.extensionToggle) {
+        void this.handleExtensionToggle(extensionToggle.dataset.extensionToggle);
+        return;
+      }
+
+      const extensionDelete = target.closest<HTMLElement>('[data-extension-delete]');
+      if (extensionDelete?.dataset.extensionDelete) {
+        void this.handleExtensionDelete(extensionDelete.dataset.extensionDelete);
+        return;
+      }
     });
 
     // Handle input events for search
@@ -209,6 +233,7 @@ export class UnifiedSettings {
 
     this.render();
     document.body.appendChild(this.overlay);
+    void this.loadExtensions();
   }
 
   public open(tab?: TabId): void {
@@ -302,6 +327,48 @@ export class UnifiedSettings {
     this.updateSourcesCounter();
     this.renderStatusTab();
     if (!this.config.isDesktopApp) this.updateAiStatus();
+  }
+
+  private async loadExtensions(): Promise<void> {
+    this.extensions = await listExtensions();
+    this.extensionsError = '';
+    if (this.activeTab === 'general') this.render();
+  }
+
+  private async handleExtensionAdd(): Promise<void> {
+    const input = this.overlay.querySelector<HTMLTextAreaElement>('#us-extension-manifest');
+    if (!input) return;
+
+    try {
+      const manifest = parseExtensionManifest(JSON.parse(input.value));
+      await upsertExtension(manifest);
+      this.extensionsSuccess = `Added ${manifest.name}`;
+      this.extensionsError = '';
+      input.value = '';
+      await this.loadExtensions();
+      await initExtensions();
+      refreshFeedsWithExtensions();
+    } catch (error) {
+      this.extensionsSuccess = '';
+      this.extensionsError = error instanceof Error ? error.message : 'Invalid manifest';
+      this.render();
+    }
+  }
+
+  private async handleExtensionToggle(id: string): Promise<void> {
+    const extension = this.extensions.find(item => item.id === id);
+    if (!extension) return;
+    await setEnabled(id, !extension.enabled);
+    await this.loadExtensions();
+    await initExtensions();
+    refreshFeedsWithExtensions();
+  }
+
+  private async handleExtensionDelete(id: string): Promise<void> {
+    await removeExtension(id);
+    await this.loadExtensions();
+    await initExtensions();
+    refreshFeedsWithExtensions();
   }
 
   private switchTab(tab: TabId): void {
@@ -424,6 +491,35 @@ export class UnifiedSettings {
       html += `<option value="${lang.code}"${selected}>${lang.flag} ${lang.label}</option>`;
     }
     html += `</select>`;
+
+    // Extensions section
+    html += `<div class="ai-flow-section-label">Extensions</div>`;
+    html += `<div class="ai-flow-toggle-desc">Install extension manifests to contribute additional feeds.</div>`;
+
+    if (this.extensions.length === 0) {
+      html += `<div class="ai-flow-toggle-desc">No extensions installed.</div>`;
+    } else {
+      for (const extension of this.extensions) {
+        html += `<div class="ai-flow-toggle-row">
+          <div class="ai-flow-toggle-label-wrap">
+            <div class="ai-flow-toggle-label">${escapeHtml(extension.name)}</div>
+            <div class="ai-flow-toggle-desc">${escapeHtml(extension.id)} · v${escapeHtml(extension.version)}</div>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <label class="ai-flow-switch">
+              <input type="checkbox" data-extension-toggle="${escapeHtml(extension.id)}"${extension.enabled ? ' checked' : ''}>
+              <span class="ai-flow-slider"></span>
+            </label>
+            <button data-extension-delete="${escapeHtml(extension.id)}" class="sources-select-none" style="padding:4px 8px;">Delete</button>
+          </div>
+        </div>`;
+      }
+    }
+
+    html += `<textarea id="us-extension-manifest" class="unified-settings-select" style="min-height:110px;resize:vertical;font-family:monospace;" placeholder="Paste extension manifest JSON"></textarea>`;
+    html += `<button id="us-extension-add" class="sources-select-all" style="margin-top:8px;">Add Extension</button>`;
+    if (this.extensionsError) html += `<div class="ai-flow-toggle-desc" style="color:#ff7b7b">${escapeHtml(this.extensionsError)}</div>`;
+    if (this.extensionsSuccess) html += `<div class="ai-flow-toggle-desc" style="color:#86efac">${escapeHtml(this.extensionsSuccess)}</div>`;
 
     // Community section
     html += `<div class="ai-flow-section-label">${t('components.community.sectionLabel')}</div>`;
