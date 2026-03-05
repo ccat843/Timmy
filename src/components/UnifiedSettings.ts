@@ -1,4 +1,4 @@
-import { FEEDS, INTEL_SOURCES, SOURCE_REGION_MAP } from '@/config/feeds';
+import { FEEDS, INTEL_SOURCES, SOURCE_REGION_MAP, refreshFeedsWithExtensions } from '@/config/feeds';
 import { PANEL_CATEGORY_MAP } from '@/config/panels';
 import { SITE_VARIANT } from '@/config/variant';
 import { LANGUAGES, changeLanguage, getCurrentLanguage, t } from '@/services/i18n';
@@ -10,6 +10,15 @@ import { escapeHtml } from '@/utils/sanitize';
 import { trackLanguageChange } from '@/services/analytics';
 import type { PanelConfig } from '@/types';
 import type { StatusPanel } from './StatusPanel';
+import type { ExtensionManifest } from '@/extensions/schema';
+import { parseExtensionManifest } from '@/extensions/schema';
+import {
+  addOrUpdateExtension,
+  getInstalledExtensions,
+  removeInstalledExtension,
+  setInstalledExtensionEnabled,
+  subscribeExtensions,
+} from '@/extensions/registry';
 
 const GEAR_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>`;
 
@@ -42,7 +51,11 @@ export class UnifiedSettings {
   private sourceFilter = '';
   private activePanelCategory = 'all';
   private panelFilter = '';
+  private extensions: ExtensionManifest[] = [];
+  private extensionsError = '';
+  private extensionsSuccess = '';
   private escapeHandler: (e: KeyboardEvent) => void;
+  private unsubscribeExtensions?: () => void;
 
   constructor(config: UnifiedSettingsConfig) {
     this.config = config;
@@ -145,6 +158,28 @@ export class UnifiedSettings {
         this.updateSourcesCounter();
         return;
       }
+
+      if (target.closest('#us-extension-add')) {
+        void this.handleExtensionAdd();
+        return;
+      }
+
+      if (target.closest('#us-extension-create')) {
+        void this.handleExtensionCreate();
+        return;
+      }
+
+      const extensionToggle = target.closest<HTMLElement>('[data-extension-toggle]');
+      if (extensionToggle?.dataset.extensionToggle) {
+        void this.handleExtensionToggle(extensionToggle.dataset.extensionToggle);
+        return;
+      }
+
+      const extensionDelete = target.closest<HTMLElement>('[data-extension-delete]');
+      if (extensionDelete?.dataset.extensionDelete) {
+        void this.handleExtensionDelete(extensionDelete.dataset.extensionDelete);
+        return;
+      }
     });
 
     // Handle input events for search
@@ -157,6 +192,8 @@ export class UnifiedSettings {
         this.sourceFilter = target.value;
         this.renderSourcesGrid();
         this.updateSourcesCounter();
+      } else if (target.closest('.us-extension-wizard')) {
+        this.updateExtensionWizardPreview();
       }
     });
 
@@ -209,6 +246,11 @@ export class UnifiedSettings {
 
     this.render();
     document.body.appendChild(this.overlay);
+    this.unsubscribeExtensions = subscribeExtensions(() => {
+      this.extensions = getInstalledExtensions();
+      this.render();
+    });
+    this.extensions = getInstalledExtensions();
   }
 
   public open(tab?: TabId): void {
@@ -241,6 +283,7 @@ export class UnifiedSettings {
 
   public destroy(): void {
     document.removeEventListener('keydown', this.escapeHandler);
+    this.unsubscribeExtensions?.();
     this.overlay.remove();
   }
 
@@ -302,6 +345,134 @@ export class UnifiedSettings {
     this.updateSourcesCounter();
     this.renderStatusTab();
     if (!this.config.isDesktopApp) this.updateAiStatus();
+    this.updateExtensionWizardPreview();
+  }
+
+  private slugifyExtensionId(value: string): string {
+    return value
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 64);
+  }
+
+  private collectWizardManifest(): { manifest: unknown; error?: string } {
+    const nameInput = this.overlay.querySelector<HTMLInputElement>('#us-extension-name');
+    const idInput = this.overlay.querySelector<HTMLInputElement>('#us-extension-id');
+    const versionInput = this.overlay.querySelector<HTMLInputElement>('#us-extension-version');
+    const categoryInput = this.overlay.querySelector<HTMLInputElement>('#us-extension-category');
+    const tagsInput = this.overlay.querySelector<HTMLInputElement>('#us-extension-tags');
+    const urlsInput = this.overlay.querySelector<HTMLTextAreaElement>('#us-extension-urls');
+
+    const name = nameInput?.value.trim() ?? '';
+    const rawId = idInput?.value.trim() ?? '';
+    const version = versionInput?.value.trim() || '0.1.0';
+    const category = categoryInput?.value.trim() || 'custom';
+    const tags = (tagsInput?.value ?? '').split(',').map(v => v.trim()).filter(Boolean);
+    const urls = (urlsInput?.value ?? '').split(/\n+/).map(v => v.trim()).filter(Boolean);
+
+    if (!name) return { manifest: null, error: 'Extension name is required.' };
+    const id = this.slugifyExtensionId(rawId || name);
+    if (!id) return { manifest: null, error: 'Valid extension id is required.' };
+    if (this.extensions.some(ext => ext.id === id)) return { manifest: null, error: `Extension id "${id}" already exists.` };
+    if (urls.length === 0) return { manifest: null, error: 'Add at least one RSS/Atom URL.' };
+
+    const seenFeedIds = new Set<string>();
+    const feeds = urls.map((url, idx) => {
+      try {
+        const parsed = new URL(url);
+        const host = parsed.hostname.replace(/[^a-z0-9]/gi, '-').toLowerCase();
+        const feedId = `${id}-${host || 'feed'}-${idx + 1}`;
+        if (seenFeedIds.has(feedId)) throw new Error('Duplicate feed id');
+        seenFeedIds.add(feedId);
+        return {
+          id: feedId,
+          category,
+          name: `${name} Feed ${idx + 1}`,
+          url,
+          type: tags.length > 0 ? tags.join(',') : undefined,
+        };
+      } catch {
+        throw new Error(`Invalid URL: ${url}`);
+      }
+    });
+
+    return {
+      manifest: {
+        id,
+        name,
+        version,
+        enabled: true,
+        contributions: { feeds },
+      },
+    };
+  }
+
+  private updateExtensionWizardPreview(): void {
+    const idInput = this.overlay.querySelector<HTMLInputElement>('#us-extension-id');
+    const nameInput = this.overlay.querySelector<HTMLInputElement>('#us-extension-name');
+    if (idInput && (!idInput.value || document.activeElement === nameInput)) {
+      idInput.value = this.slugifyExtensionId(nameInput?.value ?? '');
+    }
+
+    const preview = this.overlay.querySelector<HTMLTextAreaElement>('#us-extension-wizard-preview');
+    if (!preview) return;
+
+    try {
+      const { manifest, error } = this.collectWizardManifest();
+      preview.value = error ? `Error: ${error}` : JSON.stringify(manifest, null, 2);
+    } catch (error) {
+      preview.value = `Error: ${error instanceof Error ? error.message : 'Invalid input'}`;
+    }
+  }
+
+  private async handleExtensionCreate(): Promise<void> {
+    try {
+      const { manifest, error } = this.collectWizardManifest();
+      if (error) throw new Error(error);
+      const parsed = parseExtensionManifest(manifest);
+      await addOrUpdateExtension({ ...parsed, enabled: true });
+      this.extensionsSuccess = `Created ${parsed.name}`;
+      this.extensionsError = '';
+      refreshFeedsWithExtensions();
+      this.render();
+    } catch (error) {
+      this.extensionsSuccess = '';
+      this.extensionsError = error instanceof Error ? error.message : 'Invalid extension wizard input';
+      this.render();
+    }
+  }
+
+
+  private async handleExtensionAdd(): Promise<void> {
+    const input = this.overlay.querySelector<HTMLTextAreaElement>('#us-extension-manifest');
+    if (!input) return;
+
+    try {
+      const manifest = parseExtensionManifest(JSON.parse(input.value));
+      await addOrUpdateExtension(manifest);
+      this.extensionsSuccess = `Added ${manifest.name}`;
+      this.extensionsError = '';
+      input.value = '';
+      refreshFeedsWithExtensions();
+    } catch (error) {
+      this.extensionsSuccess = '';
+      this.extensionsError = error instanceof Error ? error.message : 'Invalid manifest';
+      this.render();
+    }
+  }
+
+  private async handleExtensionToggle(id: string): Promise<void> {
+    const extension = this.extensions.find(item => item.id === id);
+    if (!extension) return;
+    await setInstalledExtensionEnabled(id, !extension.enabled);
+    refreshFeedsWithExtensions();
+  }
+
+  private async handleExtensionDelete(id: string): Promise<void> {
+    await removeInstalledExtension(id);
+    refreshFeedsWithExtensions();
   }
 
   private switchTab(tab: TabId): void {
@@ -424,6 +595,47 @@ export class UnifiedSettings {
       html += `<option value="${lang.code}"${selected}>${lang.flag} ${lang.label}</option>`;
     }
     html += `</select>`;
+
+    // Extensions section
+    html += `<div class="ai-flow-section-label">Extensions</div>`;
+    html += `<div class="ai-flow-toggle-desc">Install extension manifests to contribute additional feeds.</div>`;
+
+    if (this.extensions.length === 0) {
+      html += `<div class="ai-flow-toggle-desc">No extensions installed.</div>`;
+    } else {
+      for (const extension of this.extensions) {
+        html += `<div class="ai-flow-toggle-row">
+          <div class="ai-flow-toggle-label-wrap">
+            <div class="ai-flow-toggle-label">${escapeHtml(extension.name)}</div>
+            <div class="ai-flow-toggle-desc">${escapeHtml(extension.id)} · v${escapeHtml(extension.version)}</div>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <label class="ai-flow-switch">
+              <input type="checkbox" data-extension-toggle="${escapeHtml(extension.id)}"${extension.enabled ? ' checked' : ''}>
+              <span class="ai-flow-slider"></span>
+            </label>
+            <button data-extension-delete="${escapeHtml(extension.id)}" class="sources-select-none" style="padding:4px 8px;">Delete</button>
+          </div>
+        </div>`;
+      }
+    }
+
+    html += `<div class="us-extension-wizard" style="display:grid;gap:8px;margin-top:8px;padding:8px;border:1px solid var(--border-color);border-radius:10px;">`
+      + `<div style="font-weight:600;">Create Extension</div>`
+      + `<input id="us-extension-name" class="unified-settings-select" placeholder="Extension name" />`
+      + `<input id="us-extension-id" class="unified-settings-select" placeholder="extension-id" />`
+      + `<input id="us-extension-version" class="unified-settings-select" value="0.1.0" placeholder="Version" />`
+      + `<input id="us-extension-category" class="unified-settings-select" placeholder="Feed category (e.g. tech)" />`
+      + `<input id="us-extension-tags" class="unified-settings-select" placeholder="Optional tags (comma separated)" />`
+      + `<textarea id="us-extension-urls" class="unified-settings-select" style="min-height:90px;resize:vertical;font-family:monospace;" placeholder="One RSS/Atom URL per line"></textarea>`
+      + `<textarea id="us-extension-wizard-preview" class="unified-settings-select" style="min-height:120px;resize:vertical;font-family:monospace;" readonly placeholder="Manifest preview"></textarea>`
+      + `<button id="us-extension-create" class="sources-select-all" type="button">Create Extension</button>`
+      + `</div>`;
+
+    html += `<textarea id="us-extension-manifest" class="unified-settings-select" style="min-height:110px;resize:vertical;font-family:monospace;" placeholder="Paste extension manifest JSON"></textarea>`;
+    html += `<button id="us-extension-add" class="sources-select-all" style="margin-top:8px;">Add Extension</button>`;
+    if (this.extensionsError) html += `<div class="ai-flow-toggle-desc" style="color:#ff7b7b">${escapeHtml(this.extensionsError)}</div>`;
+    if (this.extensionsSuccess) html += `<div class="ai-flow-toggle-desc" style="color:#86efac">${escapeHtml(this.extensionsSuccess)}</div>`;
 
     // Community section
     html += `<div class="ai-flow-section-label">${t('components.community.sectionLabel')}</div>`;
