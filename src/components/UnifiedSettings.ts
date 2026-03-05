@@ -164,6 +164,11 @@ export class UnifiedSettings {
         return;
       }
 
+      if (target.closest('#us-extension-create')) {
+        void this.handleExtensionCreate();
+        return;
+      }
+
       const extensionToggle = target.closest<HTMLElement>('[data-extension-toggle]');
       if (extensionToggle?.dataset.extensionToggle) {
         void this.handleExtensionToggle(extensionToggle.dataset.extensionToggle);
@@ -187,6 +192,8 @@ export class UnifiedSettings {
         this.sourceFilter = target.value;
         this.renderSourcesGrid();
         this.updateSourcesCounter();
+      } else if (target.closest('.us-extension-wizard')) {
+        this.updateExtensionWizardPreview();
       }
     });
 
@@ -338,6 +345,134 @@ export class UnifiedSettings {
     this.updateSourcesCounter();
     this.renderStatusTab();
     if (!this.config.isDesktopApp) this.updateAiStatus();
+    this.updateExtensionWizardPreview();
+  }
+
+  private slugifyExtensionId(value: string): string {
+    return value
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 64);
+  }
+
+  private collectWizardManifest(): { manifest: unknown; error?: string } {
+    const nameInput = this.overlay.querySelector<HTMLInputElement>('#us-extension-name');
+    const idInput = this.overlay.querySelector<HTMLInputElement>('#us-extension-id');
+    const versionInput = this.overlay.querySelector<HTMLInputElement>('#us-extension-version');
+    const categoryInput = this.overlay.querySelector<HTMLInputElement>('#us-extension-category');
+    const tagsInput = this.overlay.querySelector<HTMLInputElement>('#us-extension-tags');
+    const urlsInput = this.overlay.querySelector<HTMLTextAreaElement>('#us-extension-urls');
+
+    const name = nameInput?.value.trim() ?? '';
+    const rawId = idInput?.value.trim() ?? '';
+    const version = versionInput?.value.trim() || '0.1.0';
+    const category = categoryInput?.value.trim() || 'custom';
+    const tags = (tagsInput?.value ?? '').split(',').map(v => v.trim()).filter(Boolean);
+    const urls = (urlsInput?.value ?? '').split(/\n+/).map(v => v.trim()).filter(Boolean);
+
+    if (!name) return { manifest: null, error: 'Extension name is required.' };
+    const id = this.slugifyExtensionId(rawId || name);
+    if (!id) return { manifest: null, error: 'Valid extension id is required.' };
+    if (this.extensions.some(ext => ext.id === id)) return { manifest: null, error: `Extension id "${id}" already exists.` };
+    if (urls.length === 0) return { manifest: null, error: 'Add at least one RSS/Atom URL.' };
+
+    const seenFeedIds = new Set<string>();
+    const feeds = urls.map((url, idx) => {
+      try {
+        const parsed = new URL(url);
+        const host = parsed.hostname.replace(/[^a-z0-9]/gi, '-').toLowerCase();
+        const feedId = `${id}-${host || 'feed'}-${idx + 1}`;
+        if (seenFeedIds.has(feedId)) throw new Error('Duplicate feed id');
+        seenFeedIds.add(feedId);
+        return {
+          id: feedId,
+          category,
+          name: `${name} Feed ${idx + 1}`,
+          url,
+          type: tags.length > 0 ? tags.join(',') : undefined,
+        };
+      } catch {
+        throw new Error(`Invalid URL: ${url}`);
+      }
+    });
+
+    return {
+      manifest: {
+        id,
+        name,
+        version,
+        enabled: true,
+        contributions: { feeds },
+      },
+    };
+  }
+
+  private updateExtensionWizardPreview(): void {
+    const idInput = this.overlay.querySelector<HTMLInputElement>('#us-extension-id');
+    const nameInput = this.overlay.querySelector<HTMLInputElement>('#us-extension-name');
+    if (idInput && (!idInput.value || document.activeElement === nameInput)) {
+      idInput.value = this.slugifyExtensionId(nameInput?.value ?? '');
+    }
+
+    const preview = this.overlay.querySelector<HTMLTextAreaElement>('#us-extension-wizard-preview');
+    if (!preview) return;
+
+    try {
+      const { manifest, error } = this.collectWizardManifest();
+      preview.value = error ? `Error: ${error}` : JSON.stringify(manifest, null, 2);
+    } catch (error) {
+      preview.value = `Error: ${error instanceof Error ? error.message : 'Invalid input'}`;
+    }
+  }
+
+  private async handleExtensionCreate(): Promise<void> {
+    try {
+      const { manifest, error } = this.collectWizardManifest();
+      if (error) throw new Error(error);
+      const parsed = parseExtensionManifest(manifest);
+      await addOrUpdateExtension({ ...parsed, enabled: true });
+      this.extensionsSuccess = `Created ${parsed.name}`;
+      this.extensionsError = '';
+      refreshFeedsWithExtensions();
+      this.render();
+    } catch (error) {
+      this.extensionsSuccess = '';
+      this.extensionsError = error instanceof Error ? error.message : 'Invalid extension wizard input';
+      this.render();
+    }
+  }
+
+
+  private async handleExtensionAdd(): Promise<void> {
+    const input = this.overlay.querySelector<HTMLTextAreaElement>('#us-extension-manifest');
+    if (!input) return;
+
+    try {
+      const manifest = parseExtensionManifest(JSON.parse(input.value));
+      await addOrUpdateExtension(manifest);
+      this.extensionsSuccess = `Added ${manifest.name}`;
+      this.extensionsError = '';
+      input.value = '';
+      refreshFeedsWithExtensions();
+    } catch (error) {
+      this.extensionsSuccess = '';
+      this.extensionsError = error instanceof Error ? error.message : 'Invalid manifest';
+      this.render();
+    }
+  }
+
+  private async handleExtensionToggle(id: string): Promise<void> {
+    const extension = this.extensions.find(item => item.id === id);
+    if (!extension) return;
+    await setInstalledExtensionEnabled(id, !extension.enabled);
+    refreshFeedsWithExtensions();
+  }
+
+  private async handleExtensionDelete(id: string): Promise<void> {
+    await removeInstalledExtension(id);
+    refreshFeedsWithExtensions();
   }
 
 
@@ -515,6 +650,18 @@ export class UnifiedSettings {
         </div>`;
       }
     }
+
+    html += `<div class="us-extension-wizard" style="display:grid;gap:8px;margin-top:8px;padding:8px;border:1px solid var(--border-color);border-radius:10px;">`
+      + `<div style="font-weight:600;">Create Extension</div>`
+      + `<input id="us-extension-name" class="unified-settings-select" placeholder="Extension name" />`
+      + `<input id="us-extension-id" class="unified-settings-select" placeholder="extension-id" />`
+      + `<input id="us-extension-version" class="unified-settings-select" value="0.1.0" placeholder="Version" />`
+      + `<input id="us-extension-category" class="unified-settings-select" placeholder="Feed category (e.g. tech)" />`
+      + `<input id="us-extension-tags" class="unified-settings-select" placeholder="Optional tags (comma separated)" />`
+      + `<textarea id="us-extension-urls" class="unified-settings-select" style="min-height:90px;resize:vertical;font-family:monospace;" placeholder="One RSS/Atom URL per line"></textarea>`
+      + `<textarea id="us-extension-wizard-preview" class="unified-settings-select" style="min-height:120px;resize:vertical;font-family:monospace;" readonly placeholder="Manifest preview"></textarea>`
+      + `<button id="us-extension-create" class="sources-select-all" type="button">Create Extension</button>`
+      + `</div>`;
 
     html += `<textarea id="us-extension-manifest" class="unified-settings-select" style="min-height:110px;resize:vertical;font-family:monospace;" placeholder="Paste extension manifest JSON"></textarea>`;
     html += `<button id="us-extension-add" class="sources-select-all" style="margin-top:8px;">Add Extension</button>`;
