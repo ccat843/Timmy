@@ -475,6 +475,37 @@ export class UnifiedSettings {
     refreshFeedsWithExtensions();
   }
 
+
+  private async handleExtensionAdd(): Promise<void> {
+    const input = this.overlay.querySelector<HTMLTextAreaElement>('#us-extension-manifest');
+    if (!input) return;
+
+    try {
+      const manifest = parseExtensionManifest(JSON.parse(input.value));
+      await addOrUpdateExtension(manifest);
+      this.extensionsSuccess = `Added ${manifest.name}`;
+      this.extensionsError = '';
+      input.value = '';
+      refreshFeedsWithExtensions();
+    } catch (error) {
+      this.extensionsSuccess = '';
+      this.extensionsError = error instanceof Error ? error.message : 'Invalid manifest';
+      this.render();
+    }
+  }
+
+  private async handleExtensionToggle(id: string): Promise<void> {
+    const extension = this.extensions.find(item => item.id === id);
+    if (!extension) return;
+    await setInstalledExtensionEnabled(id, !extension.enabled);
+    refreshFeedsWithExtensions();
+  }
+
+  private async handleExtensionDelete(id: string): Promise<void> {
+    await removeInstalledExtension(id);
+    refreshFeedsWithExtensions();
+  }
+
   private switchTab(tab: TabId): void {
     this.activeTab = tab;
 

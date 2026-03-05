@@ -129,8 +129,7 @@ export async function deleteCase(id: string): Promise<void> {
 
 export async function listEvidence(caseId: string): Promise<EvidenceItem[]> {
   const db = await openDb();
-  return new Promise((resolve, reject) => {
-    const req = db.transaction(EVIDENCE_STORE, 'readonly').objectStore(EVIDENCE_STORE).index('caseId').getAll(IDBKeyRange.only(caseId));
+  return new Promise((resolve, reject) => {    const req = db.transaction(EVIDENCE_STORE, 'readonly').objectStore(EVIDENCE_STORE).index('caseId').getAll(IDBKeyRange.only(caseId));
     req.onsuccess = () => resolve((req.result as EvidenceItem[]).slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
     req.onerror = () => reject(req.error ?? new Error('Failed to list evidence'));
   });
