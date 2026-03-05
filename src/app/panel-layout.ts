@@ -49,6 +49,10 @@ import { GoodThingsDigestPanel } from '@/components/GoodThingsDigestPanel';
 import { SpeciesComebackPanel } from '@/components/SpeciesComebackPanel';
 import { RenewableEnergyPanel } from '@/components/RenewableEnergyPanel';
 import { GivingPanel } from '@/components';
+import { CasesPanel } from '@/intel/ui/CasesPanel';
+import { AlertsPanel } from '@/intel/ui/AlertsPanel';
+import { EventsPanel } from '@/intel_ui/events/EventsPanel';
+import { RecordsSearchPanel } from '@/intel_ui/search/RecordsSearchPanel';
 import { focusInvestmentOnMap } from '@/services/investments-focus';
 import { debounce, saveToStorage, loadFromStorage } from '@/utils';
 import { escapeHtml } from '@/utils/sanitize';
@@ -460,6 +464,18 @@ export class PanelLayoutManager implements AppModule {
 
     const monitorPanel = new MonitorPanel(this.ctx.monitors);
     this.ctx.panels['monitors'] = monitorPanel;
+
+    const casesPanel = new CasesPanel();
+    this.ctx.panels['cases'] = casesPanel;
+
+    const alertsPanel = new AlertsPanel();
+    this.ctx.panels['alerts'] = alertsPanel;
+
+    const eventsPanel = new EventsPanel();
+    this.ctx.panels['intel-events'] = eventsPanel;
+
+    const recordsSearchPanel = new RecordsSearchPanel();
+    this.ctx.panels['records-search'] = recordsSearchPanel;
     monitorPanel.onChanged((monitors) => {
       this.ctx.monitors = monitors;
       saveToStorage(STORAGE_KEYS.monitors, monitors);
