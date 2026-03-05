@@ -714,6 +714,7 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': resolve(__dirname, 'src'),
+      zod: resolve(__dirname, 'src/extensions/zod-shim.ts'),
       child_process: resolve(__dirname, 'src/shims/child-process.ts'),
       'node:child_process': resolve(__dirname, 'src/shims/child-process.ts'),
       '@loaders.gl/worker-utils/dist/lib/process-utils/child-process-proxy.js': resolve(

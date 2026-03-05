@@ -210,6 +210,8 @@ import { installRuntimeFetchPatch, installWebApiRedirect } from '@/services/runt
 import { loadDesktopSecrets } from '@/services/runtime-config';
 import { applyStoredTheme } from '@/utils/theme-manager';
 import { SITE_VARIANT } from '@/config/variant';
+import { refreshFeedsWithExtensions } from '@/config/feeds';
+import { initExtensions, subscribeExtensions } from '@/extensions/registry';
 import { clearChunkReloadGuard, installChunkReloadGuard } from '@/bootstrap/chunk-reload';
 
 // Auto-reload on stale chunk 404s after deployment (Vite fires this for modulepreload failures).
@@ -250,31 +252,40 @@ requestAnimationFrame(() => {
 // Clear stale settings-open flag (survives ungraceful shutdown)
 localStorage.removeItem('wm-settings-open');
 
+subscribeExtensions(() => {
+  refreshFeedsWithExtensions();
+});
+
+const extensionsReady = initExtensions().then(() => {
+  refreshFeedsWithExtensions();
+});
+
 // Standalone windows: ?settings=1 = panel display settings, ?live-channels=1 = channel management
 // Both need i18n initialized so t() does not return undefined.
 const urlParams = new URL(location.href).searchParams;
 if (urlParams.get('settings') === '1') {
-  void Promise.all([import('./services/i18n'), import('./settings-window')]).then(
+  void extensionsReady.then(() => Promise.all([import('./services/i18n'), import('./settings-window')])).then(
     async ([i18n, m]) => {
       await i18n.initI18n();
       m.initSettingsWindow();
     }
   );
 } else if (urlParams.get('live-channels') === '1') {
-  void Promise.all([import('./services/i18n'), import('./live-channels-window')]).then(
+  void extensionsReady.then(() => Promise.all([import('./services/i18n'), import('./live-channels-window')])).then(
     async ([i18n, m]) => {
       await i18n.initI18n();
       m.initLiveChannelsWindow();
     }
   );
 } else {
-  const app = new App('app');
-  app
-    .init()
-    .then(() => {
-      clearChunkReloadGuard(chunkReloadStorageKey);
-    })
-    .catch(console.error);
+  void extensionsReady.then(() => {
+    const app = new App('app');
+    return app
+      .init()
+      .then(() => {
+        clearChunkReloadGuard(chunkReloadStorageKey);
+      });
+  }).catch(console.error);
 }
 
 // Debug helpers for geo-convergence testing (remove in production)
