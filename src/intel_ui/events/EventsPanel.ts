@@ -5,6 +5,7 @@ import {
   health,
   listEventHypotheses,
   listEvents,
+  rebuildEvents,
   type IntelEvent,
   type IntelHypothesisResult,
 } from '@/intel_client/client';
@@ -29,6 +30,7 @@ export class EventsPanel extends Panel {
   private textFilter = '';
   private loading = false;
   private offline = false;
+  private statusHint = '';
   private error = '';
   private detailError = '';
 
@@ -43,6 +45,10 @@ export class EventsPanel extends Panel {
       const target = event.target as HTMLElement;
       if (target.closest('[data-events-retry]')) {
         void this.refresh();
+        return;
+      }
+      if (target.closest('[data-events-rebuild]')) {
+        void this.handleRebuild();
         return;
       }
 
@@ -83,13 +89,12 @@ export class EventsPanel extends Panel {
 
     const status = await health();
     if (!status.ok) {
-      this.offline = true;
-      this.loading = false;
-      this.render();
-      return;
+      this.statusHint = 'Intel engine health check failed; trying to load events anyway.';
+    } else {
+      this.statusHint = '';
+      this.offline = false;
     }
 
-    this.offline = false;
     await this.refreshList();
   }
 
@@ -101,10 +106,13 @@ export class EventsPanel extends Panel {
     const result = await listEvents({ from: fromRange(this.range), limit: 500, offset: 0 });
     if (!result.ok) {
       this.error = result.error ?? 'Failed to load events';
+      this.offline = true;
       this.loading = false;
       this.render();
       return;
     }
+
+    this.offline = false;
 
     this.events = result.events;
     this.setCount(this.events.length);
@@ -170,9 +178,24 @@ export class EventsPanel extends Panel {
     this.render();
   }
 
+  private async handleRebuild(): Promise<void> {
+    this.error = '';
+    this.statusHint = 'Rebuilding events from recent observations...';
+    this.render();
+    const rebuilt = await rebuildEvents(14);
+    if (!rebuilt.ok) {
+      this.error = rebuilt.error ?? 'Failed to rebuild events';
+      this.statusHint = '';
+      this.render();
+      return;
+    }
+    this.statusHint = `Rebuilt events (${rebuilt.built ?? 0} clusters). Refreshing list...`;
+    await this.refreshList();
+  }
+
   private render(): void {
     if (this.offline) {
-      this.setContent(`<div class="panel-empty">Intel Engine offline</div><button data-events-retry>Retry</button>`);
+      this.setContent(`<div class="panel-empty">Intel Engine offline</div><div style="opacity:.8;margin-top:6px;">Run a data load first, then click rebuild.</div><div style="display:flex;gap:8px;margin-top:8px;"><button data-events-retry>Retry</button><button data-events-rebuild>Rebuild events</button></div>`);
       return;
     }
 
@@ -205,6 +228,7 @@ export class EventsPanel extends Panel {
       : '<div class="panel-empty">Select an event to view details</div>';
 
     const loadingHtml = this.loading ? '<div style="opacity:.7">Loading events…</div>' : '';
+    const statusHintHtml = this.statusHint ? `<div style="opacity:.75">${escapeHtml(this.statusHint)}</div>` : '';
     const errorHtml = this.error ? `<div style="color:#ff7b7b">${escapeHtml(this.error)}</div>` : '';
     const detailErrorHtml = this.detailError ? `<div style="color:#ff7b7b">${escapeHtml(this.detailError)}</div>` : '';
 
@@ -218,12 +242,13 @@ export class EventsPanel extends Panel {
         <input data-events-filter placeholder="Filter events" value="${escapeHtml(this.textFilter)}" />
       </div>
       ${loadingHtml}
+      ${statusHintHtml}
       ${errorHtml}
       <div style="display:grid;grid-template-columns:1fr 1.2fr;gap:10px;align-items:start;">
         <div style="display:grid;gap:8px;max-height:480px;overflow:auto;">${listHtml}</div>
         <div style="display:grid;gap:8px;max-height:480px;overflow:auto;">${detailErrorHtml}${detailHtml}</div>
       </div>
-      <div style="margin-top:8px;"><button data-events-retry>Retry</button></div>
+y       <div style="margin-top:8px;display:flex;gap:8px;"><button data-events-retry>Retry</button><button data-events-rebuild>Rebuild events</button></div>
     `);
   }
 }

@@ -1,6 +1,6 @@
 import { getIntelEngineBaseUrl } from '@/config/intel-engine';
 
-const DEFAULT_TIMEOUT_MS = 8000;
+const DEFAULT_TIMEOUT_MS = 20000;
 
 export interface IntelObservation {
   id: string;
@@ -164,6 +164,24 @@ async function fetchJsonWithTimeout<T>(
   init?: RequestInit,
   timeoutMs = DEFAULT_TIMEOUT_MS,
 ): Promise<IntelClientResult<T>> {
+  const parseResponseJson = async (response: Response): Promise<IntelClientResult<T>> => {
+    const contentType = (response.headers.get('Content-Type') ?? '').toLowerCase();
+    if (!contentType.includes('application/json')) {
+      const preview = (await response.text()).slice(0, 120).trim();
+      if (preview.startsWith('<!DOCTYPE') || preview.startsWith('<html')) {
+        return { ok: false, error: 'Intel API returned HTML instead of JSON. Check VITE_INTEL_ENGINE_BASE_URL and /api/intel routes.' };
+      }
+      return { ok: false, error: 'Intel API returned non-JSON response.' };
+    }
+
+    try {
+      const data = await response.json() as T;
+      return { ok: true, data };
+    } catch {
+      return { ok: false, error: 'Intel API returned invalid JSON.' };
+    }
+  };
+
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -171,10 +189,19 @@ async function fetchJsonWithTimeout<T>(
     if (!response.ok) {
       return { ok: false, error: `Request failed (${response.status})` };
     }
-    const data = await response.json() as T;
-    return { ok: true, data };
+    return await parseResponseJson(response);
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') {
+      if ((init?.method ?? 'GET').toUpperCase() === 'GET') {
+        try {
+          const retryResponse = await fetch(url, { ...init });
+          if (retryResponse.ok) {
+            return await parseResponseJson(retryResponse);
+          }
+        } catch {
+          // fall through to timeout error
+        }
+      }
       return { ok: false, error: 'Request timed out' };
     }
     return { ok: false, error: error instanceof Error ? error.message : 'Request failed' };
@@ -344,4 +371,15 @@ export async function askInvestigation(question: string): Promise<{ ok: boolean;
   });
   if (!result.ok) return { ok: false, error: result.error };
   return { ok: true, structured_query: result.data?.structured_query, result: result.data?.result };
+}
+
+
+export async function rebuildEvents(days = 14): Promise<{ ok: boolean; built?: number; error?: string }> {
+  const result = await fetchJsonWithTimeout<{ built?: number }>(buildIntelUrl('/api/intel/rebuild-events'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ days }),
+  }, 30000);
+  if (!result.ok) return { ok: false, error: result.error };
+  return { ok: true, built: result.data?.built ?? 0 };
 }

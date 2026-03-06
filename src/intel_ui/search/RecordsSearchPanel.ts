@@ -7,7 +7,7 @@ export class RecordsSearchPanel extends Panel {
   private query = '';
   private sourceType = '';
   private entityType = '';
-  private fromIso = '';
+  private fromIso = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
   private toIso = '';
   private lat = '';
   private lon = '';
@@ -39,6 +39,19 @@ export class RecordsSearchPanel extends Panel {
     this.content.addEventListener('click', (event) => {
       const target = event.target as HTMLElement;
       if (target.closest('[data-records-search]')) return void this.runSearch();
+      const quick = target.closest<HTMLElement>('[data-records-quick-range]');
+      if (quick?.dataset.recordsQuickRange) {
+        const days = Number(quick.dataset.recordsQuickRange);
+        this.fromIso = Number.isFinite(days) ? new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString() : '';
+        this.toIso = '';
+        return void this.runSearch();
+      }
+      if (target.closest('[data-records-clear-filters]')) {
+        this.query = ''; this.sourceType = ''; this.entityType = ''; this.lat = ''; this.lon = ''; this.radiusKm = '';
+        this.fromIso = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+        this.toIso = '';
+        return void this.runSearch();
+      }
 
       const open = target.closest<HTMLElement>('[data-open-record]');
       if (open?.dataset.openRecord) return void this.openRecord(open.dataset.openRecord);
@@ -78,7 +91,7 @@ export class RecordsSearchPanel extends Panel {
     });
 
     if (!result.ok) {
-      this.error = result.error ?? 'Search failed';
+      this.error = (result.error ?? 'Search failed') + '. Tip: Click Quick 7d or Clear and try again.';
       this.results = [];
       this.render();
       return;
@@ -119,19 +132,25 @@ export class RecordsSearchPanel extends Panel {
       : '<div class="panel-empty">Select a record</div>';
 
     this.setContent(`
-      <div style="display:grid;grid-template-columns:2fr 1fr 1fr auto;gap:8px;margin-bottom:8px;">
-        <input data-records-query placeholder="Keyword / FTS query" value="${escapeHtml(this.query)}" />
-        <input data-records-source-type placeholder="source_type" value="${escapeHtml(this.sourceType)}" />
-        <input data-records-entity-type placeholder="entity_type" value="${escapeHtml(this.entityType)}" />
+      <div style="display:grid;grid-template-columns:2fr 1fr auto auto auto;gap:8px;margin-bottom:8px;">
+        <input data-records-query placeholder="Search records (optional)" value="${escapeHtml(this.query)}" />
         <button data-records-search>Search</button>
+        <button data-records-quick-range="1">Quick 24h</button>
+        <button data-records-quick-range="7">Quick 7d</button>
+        <button data-records-clear-filters>Clear</button>
       </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr 1fr;gap:8px;margin-bottom:8px;">
-        <input data-records-from placeholder="From ISO" value="${escapeHtml(this.fromIso)}" />
-        <input data-records-to placeholder="To ISO" value="${escapeHtml(this.toIso)}" />
-        <input data-records-lat placeholder="Latitude" value="${escapeHtml(this.lat)}" />
-        <input data-records-lon placeholder="Longitude" value="${escapeHtml(this.lon)}" />
-        <input data-records-radius placeholder="Radius km" value="${escapeHtml(this.radiusKm)}" />
-      </div>
+      <details style="margin-bottom:8px;">
+        <summary style="cursor:pointer;opacity:.8;">Advanced filters (optional)</summary>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:8px;">
+          <input data-records-source-type placeholder="source_type" value="${escapeHtml(this.sourceType)}" />
+          <input data-records-entity-type placeholder="entity_type" value="${escapeHtml(this.entityType)}" />
+          <input data-records-from placeholder="From ISO (default last 7d)" value="${escapeHtml(this.fromIso)}" />
+          <input data-records-to placeholder="To ISO" value="${escapeHtml(this.toIso)}" />
+          <input data-records-lat placeholder="Latitude" value="${escapeHtml(this.lat)}" />
+          <input data-records-lon placeholder="Longitude" value="${escapeHtml(this.lon)}" />
+          <input data-records-radius placeholder="Radius km" value="${escapeHtml(this.radiusKm)}" />
+        </div>
+      </details>
       ${this.error ? `<div style="color:#ff7b7b">${escapeHtml(this.error)}</div>` : ''}
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
         <div style="display:grid;gap:8px;max-height:520px;overflow:auto;">${rows || '<div class="panel-empty">No records</div>'}</div>
