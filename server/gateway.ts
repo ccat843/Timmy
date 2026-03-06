@@ -17,6 +17,7 @@ import { mapErrorToResponse } from './error-mapper';
 import { checkRateLimit } from './_shared/rate-limit';
 import { drainResponseHeaders } from './_shared/response-headers';
 import type { ServerOptions } from '../src/generated/server/worldmonitor/seismology/v1/service_server';
+import { ingestRecordsFromApiPayload } from './intel_engine/records/routes';
 
 export const serverOptions: ServerOptions = { onError: mapErrorToResponse };
 
@@ -34,6 +35,11 @@ const TIER_HEADERS: Record<CacheTier, string> = {
   daily: 'public, s-maxage=86400, stale-while-revalidate=3600, stale-if-error=172800',
   'no-store': 'no-store',
 };
+
+
+function shouldCaptureForRecordIngest(pathname: string): boolean {
+  return pathname.startsWith('/api/') && !pathname.startsWith('/api/intel/records/');
+}
 
 const RPC_CACHE_TIER: Record<string, CacheTier> = {
   '/api/maritime/v1/get-vessel-snapshot': 'no-store',
@@ -223,6 +229,19 @@ export function createDomainGateway(
         mergedHeaders.set('X-Cache-Tier', tier);
       }
     }
+    const requestPathname = new URL(request.url).pathname;
+    if (response.status === 200 && shouldCaptureForRecordIngest(requestPathname)) {
+      try {
+        const cloned = response.clone();
+        const ct = cloned.headers.get('Content-Type') ?? '';
+        if (ct.includes('application/json')) {
+          cloned.json().then((payload) => ingestRecordsFromApiPayload(requestPathname, payload)).catch(() => {});
+        }
+      } catch {
+        // non-blocking capture path
+      }
+    }
+
     mergedHeaders.delete('X-No-Cache');
     if (!new URL(request.url).searchParams.has('_debug')) {
       mergedHeaders.delete('X-Cache-Tier');
