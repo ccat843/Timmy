@@ -248,7 +248,7 @@ export class EventsPanel extends Panel {
         <div style="display:grid;gap:8px;max-height:480px;overflow:auto;">${listHtml}</div>
         <div style="display:grid;gap:8px;max-height:480px;overflow:auto;">${detailErrorHtml}${detailHtml}</div>
       </div>
-      <div style="margin-top:8px;display:flex;gap:8px;"><button data-events-retry>Retry</button><button data-events-rebuild>Rebuild events</button></div>
+y       <div style="margin-top:8px;display:flex;gap:8px;"><button data-events-retry>Retry</button><button data-events-rebuild>Rebuild events</button></div>
     `);
   }
 }
