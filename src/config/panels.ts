@@ -43,6 +43,8 @@ const FULL_PANELS: Record<string, PanelConfig> = {
   monitors: { name: 'My Monitors', enabled: true, priority: 2 },
   cases: { name: 'Cases', enabled: true, priority: 2 },
   alerts: { name: 'Alerts', enabled: true, priority: 2 },
+  'intel-events': { name: 'Events', enabled: true, priority: 2 },
+  'records-search': { name: 'Search', enabled: true, priority: 2 },
   'satellite-fires': { name: 'Fires', enabled: true, priority: 2 },
   'macro-signals': { name: 'Market Radar', enabled: true, priority: 2 },
   'gulf-economies': { name: 'Gulf Economies', enabled: false, priority: 2 },
@@ -206,6 +208,8 @@ const TECH_PANELS: Record<string, PanelConfig> = {
   monitors: { name: 'My Monitors', enabled: true, priority: 2 },
   cases: { name: 'Cases', enabled: true, priority: 2 },
   alerts: { name: 'Alerts', enabled: true, priority: 2 },
+  'intel-events': { name: 'Events', enabled: true, priority: 2 },
+  'records-search': { name: 'Search', enabled: true, priority: 2 },
 };
 
 const TECH_MAP_LAYERS: MapLayers = {
@@ -353,6 +357,8 @@ const FINANCE_PANELS: Record<string, PanelConfig> = {
   monitors: { name: 'My Monitors', enabled: true, priority: 2 },
   cases: { name: 'Cases', enabled: true, priority: 2 },
   alerts: { name: 'Alerts', enabled: true, priority: 2 },
+  'intel-events': { name: 'Events', enabled: true, priority: 2 },
+  'records-search': { name: 'Search', enabled: true, priority: 2 },
 };
 
 const FINANCE_MAP_LAYERS: MapLayers = {
@@ -615,7 +621,7 @@ export const PANEL_CATEGORY_MAP: Record<string, { labelKey: string; panelKeys: s
   // All variants — essential panels
   core: {
     labelKey: 'header.panelCatCore',
-    panelKeys: ['map', 'live-news', 'live-webcams', 'insights', 'strategic-posture', 'cases', 'alerts'],
+    panelKeys: ['map', 'live-news', 'live-webcams', 'insights', 'strategic-posture', 'cases', 'alerts', 'intel-events', 'records-search'],
   },
 
   // Full (geopolitical) variant
@@ -641,7 +647,7 @@ export const PANEL_CATEGORY_MAP: Record<string, { labelKey: string; panelKeys: s
   },
   dataTracking: {
     labelKey: 'header.panelCatDataTracking',
-    panelKeys: ['monitors', 'cases', 'alerts', 'satellite-fires', 'ucdp-events', 'displacement', 'climate', 'population-exposure', 'security-advisories', 'oref-sirens', 'world-clock'],
+    panelKeys: ['monitors', 'cases', 'alerts', 'intel-events', 'records-search', 'satellite-fires', 'ucdp-events', 'displacement', 'climate', 'population-exposure', 'security-advisories', 'oref-sirens', 'world-clock'],
     variants: ['full'],
   },
 
@@ -663,7 +669,7 @@ export const PANEL_CATEGORY_MAP: Record<string, { labelKey: string; panelKeys: s
   },
   techMarkets: {
     labelKey: 'header.panelCatMarkets',
-    panelKeys: ['markets', 'finance', 'crypto', 'economic', 'polymarket', 'macro-signals', 'etf-flows', 'stablecoins', 'layoffs', 'monitors', 'cases', 'alerts', 'world-clock'],
+    panelKeys: ['markets', 'finance', 'crypto', 'economic', 'polymarket', 'macro-signals', 'etf-flows', 'stablecoins', 'layoffs', 'monitors', 'cases', 'alerts', 'intel-events', 'records-search', 'world-clock'],
     variants: ['tech'],
   },
 
@@ -700,7 +706,7 @@ export const PANEL_CATEGORY_MAP: Record<string, { labelKey: string; panelKeys: s
   },
   gulfMena: {
     labelKey: 'header.panelCatGulfMena',
-    panelKeys: ['gulf-economies', 'gcc-investments', 'gccNews', 'monitors', 'cases', 'alerts', 'world-clock'],
+    panelKeys: ['gulf-economies', 'gcc-investments', 'gccNews', 'monitors', 'cases', 'alerts', 'intel-events', 'records-search', 'world-clock'],
     variants: ['finance'],
   },
 };

@@ -17,6 +17,7 @@ import { mapErrorToResponse } from './error-mapper';
 import { checkRateLimit } from './_shared/rate-limit';
 import { drainResponseHeaders } from './_shared/response-headers';
 import type { ServerOptions } from '../src/generated/server/worldmonitor/seismology/v1/service_server';
+import { ingestRecordsFromApiPayload } from './intel_engine/records/routes';
 
 export const serverOptions: ServerOptions = { onError: mapErrorToResponse };
 
@@ -34,6 +35,28 @@ const TIER_HEADERS: Record<CacheTier, string> = {
   daily: 'public, s-maxage=86400, stale-while-revalidate=3600, stale-if-error=172800',
   'no-store': 'no-store',
 };
+
+
+const RECORD_CAPTURE_SKIP_PATTERNS: RegExp[] = [
+  /\/health$/i,
+  /\/status$/i,
+  /\/heartbeat$/i,
+  /\/metrics$/i,
+  /\/intel\//i,
+];
+
+const RECORD_CAPTURE_SKIP_PATHS = new Set<string>([
+  '/api/news/v1/list-feed-digest',
+  '/api/intelligence/v1/get-risk-scores',
+  '/api/intelligence/v1/get-pizzint-status',
+]);
+
+function shouldCaptureForRecordIngest(pathname: string): boolean {
+  if (!pathname.startsWith('/api/')) return false;
+  if (pathname.startsWith('/api/intel/records/')) return false;
+  if (RECORD_CAPTURE_SKIP_PATHS.has(pathname)) return false;
+  return !RECORD_CAPTURE_SKIP_PATTERNS.some((pattern) => pattern.test(pathname));
+}
 
 const RPC_CACHE_TIER: Record<string, CacheTier> = {
   '/api/maritime/v1/get-vessel-snapshot': 'no-store',
@@ -223,6 +246,19 @@ export function createDomainGateway(
         mergedHeaders.set('X-Cache-Tier', tier);
       }
     }
+    const requestPathname = new URL(request.url).pathname;
+    if (response.status === 200 && shouldCaptureForRecordIngest(requestPathname)) {
+      try {
+        const cloned = response.clone();
+        const ct = cloned.headers.get('Content-Type') ?? '';
+        if (ct.includes('application/json')) {
+          cloned.json().then((payload) => ingestRecordsFromApiPayload(requestPathname, payload)).catch(() => {});
+        }
+      } catch {
+        // non-blocking capture path
+      }
+    }
+
     mergedHeaders.delete('X-No-Cache');
     if (!new URL(request.url).searchParams.has('_debug')) {
       mergedHeaders.delete('X-Cache-Tier');

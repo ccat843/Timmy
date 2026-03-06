@@ -18,8 +18,44 @@ export interface Observation {
 
 export interface IntelEvent {
   id: string;
-  type: string;
-  observedAt: string;
+  createdAt: string;
+  fromTime: string;
+  toTime: string;
+  centroidLat?: number;
+  centroidLon?: number;
+  title: string;
+  summary: string;
+  confidence?: number;
+  tags: string[];
+}
+
+export interface EventWithObservations extends IntelEvent {
+  observations: Observation[];
+}
+
+export interface Hypothesis {
+  id: string;
+  eventId: string;
+  label: string;
+  description: string;
+  confidence: number;
+  createdAt: string;
+}
+
+export type HypothesisRelation = 'supports' | 'contradicts';
+
+export interface HypothesisEvidence {
+  hypothesisId: string;
+  observationId: string;
+  relation: HypothesisRelation;
+  weight: number;
+}
+
+export interface HypothesisWithEvidence {
+  hypothesis: Hypothesis;
+  confidence: number;
+  supportingObservations: Observation[];
+  contradictingObservations: Observation[];
 }
 
 export interface IntelEntity {
@@ -39,6 +75,20 @@ export interface ObservationFilters {
     maxLat: number;
     maxLon: number;
   };
+}
+
+export interface EventFilters {
+  from?: string;
+  to?: string;
+  bbox?: {
+    minLat: number;
+    minLon: number;
+    maxLat: number;
+    maxLon: number;
+  };
+  tags?: string[];
+  limit?: number;
+  offset?: number;
 }
 
 export function isIsoDateString(value: string): boolean {
