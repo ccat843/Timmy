@@ -1,5 +1,6 @@
 import type { Feed } from '@/types';
 import { SITE_VARIANT } from './variant';
+import { getMergedFeeds } from '@/extensions/registry';
 
 // Helper to create RSS proxy URL (Vercel)
 const rss = (url: string) => `/api/rss-proxy?url=${encodeURIComponent(url)}`;
@@ -1063,13 +1064,20 @@ const HAPPY_FEEDS: Record<string, Feed[]> = {
 };
 
 // Variant-aware exports
-export const FEEDS = SITE_VARIANT === 'tech'
+const BASE_FEEDS = SITE_VARIANT === 'tech'
   ? TECH_FEEDS
   : SITE_VARIANT === 'finance'
     ? FINANCE_FEEDS
     : SITE_VARIANT === 'happy'
       ? HAPPY_FEEDS
       : FULL_FEEDS;
+
+export let FEEDS = getMergedFeeds(BASE_FEEDS);
+
+export function refreshFeedsWithExtensions(): void {
+  FEEDS = getMergedFeeds(BASE_FEEDS);
+  _sourcePanelMap = null;
+}
 
 export const SOURCE_REGION_MAP: Record<string, { labelKey: string; feedKeys: string[] }> = {
   // Full (geopolitical) variant regions
