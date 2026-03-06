@@ -1,6 +1,8 @@
 import type { RouteDescriptor } from '../router';
 import { getIntelEngine } from './engine';
 import { createRecordRoutes } from './records/routes';
+import { createEntityRoutes } from './entities/routes';
+import { createInvestigationRoutes } from './investigation/routes';
 import type { EventFilters, ObservationFilters } from './schema';
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -153,5 +155,7 @@ export function createIntelEngineRoutes(): RouteDescriptor[] {
     { method: 'GET', path: '/api/intel/events/{id}/hypotheses', handler: handleListEventHypotheses },
     { method: 'GET', path: '/api/intel/hypotheses/{id}', handler: handleGetHypothesis },
     ...createRecordRoutes(),
+    ...createEntityRoutes(),
+    ...createInvestigationRoutes(),
   ];
 }

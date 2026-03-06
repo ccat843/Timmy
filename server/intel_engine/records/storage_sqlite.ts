@@ -1,86 +1,119 @@
-import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { mkdir, stat } from 'node:fs/promises';
+import { dirname, resolve } from 'node:path';
 import { hashString } from '../../_shared/hash';
+import { runRecordsCleanup } from './cleanup';
 import type { RecordSearchFilters, UniversalRecord } from './schema';
-import { getSQLiteRecordIndex } from './index_sqlite';
 
-const STORAGE_PATH = process.env.INTEL_RECORDS_PATH ?? '.local/intel_engine/records.jsonl';
-const RETENTION_DAYS = Number(process.env.RECORD_RETENTION_DAYS ?? '14');
-const MAX_PER_SOURCE = Number(process.env.RECORD_MAX_PER_SOURCE ?? '10000');
-const MAX_TOTAL = Number(process.env.RECORD_MAX_TOTAL ?? '200000');
-const DISK_BUDGET_BYTES = Number(process.env.RECORD_DISK_BUDGET_BYTES ?? '0');
+const DB_PATH = resolve(process.cwd(), process.env.INTEL_RECORDS_DB_PATH ?? 'server/intel_engine/records/intel_records.db');
+const CLEANUP_EVERY_INSERTS = Math.max(50, Number(process.env.RECORD_CLEANUP_EVERY_INSERTS ?? '500'));
 
-function tokensFor(record: UniversalRecord): Set<string> {
-  const text = `${record.title ?? ''} ${record.text ?? ''}`.toLowerCase().replace(/[^a-z0-9\s]/g, ' ');
-  return new Set(text.split(/\s+/).map((t) => t.trim()).filter((t) => t.length >= 2));
+function toTimestampMs(record: UniversalRecord): number {
+  if (typeof record.timestamp === 'number' && Number.isFinite(record.timestamp)) return record.timestamp;
+  const value = Date.parse(record.published_at ?? record.fetched_at);
+  return Number.isNaN(value) ? Date.now() : value;
+}
+
+function toSource(record: UniversalRecord): string {
+  return `${record.source_type}:${record.source_id}`;
+}
+
+
+function extractTitleUrl(rawJson: string): { title?: string; url?: string } {
+  try {
+    const parsed = JSON.parse(rawJson) as Record<string, unknown>;
+    const title = typeof parsed.title === 'string' ? parsed.title : typeof parsed.name === 'string' ? parsed.name : undefined;
+    const url = typeof parsed.url === 'string' ? parsed.url : typeof parsed.link === 'string' ? parsed.link : undefined;
+    return { title, url };
+  } catch {
+    return {};
+  }
+}
+
+function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const toRad = (deg: number) => (deg * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a = Math.sin(dLat / 2) ** 2
+    + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return 6371 * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
 }
 
 export class UniversalRecordStore {
-  private loaded = false;
-  private readonly records = new Map<string, UniversalRecord>();
-  private readonly bySource = new Map<string, string[]>();
-  private readonly fts = new Map<string, Set<string>>(); // token -> record ids (FTS5-like index)
+  private db: import('node:sqlite').DatabaseSync | null = null;
+  private ready = false;
+  private insertsSinceCleanup = 0;
 
-  private async ensureLoaded(): Promise<void> {
-    if (this.loaded) return;
-    this.loaded = true;
+  private async ensureReady(): Promise<void> {
+    if (this.ready) return;
+    this.ready = true;
+    await mkdir(dirname(DB_PATH), { recursive: true });
 
-    try {
-      const content = await readFile(STORAGE_PATH, 'utf8');
-      for (const line of content.split('\n').map((l) => l.trim()).filter(Boolean)) {
-        try {
-          const parsed = JSON.parse(line) as UniversalRecord;
-          this.records.set(parsed.id, parsed);
-        } catch {
-          // ignore malformed lines
-        }
-      }
-      this.rebuildIndexes();
-    } catch {
-      // first run
-    }
+    const { DatabaseSync } = await import('node:sqlite');
+    this.db = new DatabaseSync(DB_PATH);
+    this.db.exec(`
+      PRAGMA journal_mode=WAL;
+      PRAGMA synchronous=NORMAL;
+      CREATE TABLE IF NOT EXISTS records (
+        id TEXT PRIMARY KEY,
+        source TEXT,
+        entity_type TEXT,
+        timestamp INTEGER,
+        lat REAL,
+        lon REAL,
+        text_summary TEXT,
+        raw_json TEXT,
+        created_at INTEGER
+      );
+      CREATE TABLE IF NOT EXISTS metadata (
+        key TEXT PRIMARY KEY,
+        value TEXT
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_records_timestamp ON records(timestamp);
+      CREATE INDEX IF NOT EXISTS idx_records_source ON records(source);
+      CREATE INDEX IF NOT EXISTS idx_records_entity_type ON records(entity_type);
+
+      CREATE VIRTUAL TABLE IF NOT EXISTS records_fts USING fts5(
+        id UNINDEXED,
+        text_summary,
+        source,
+        entity_type,
+        content=''
+      );
+
+      CREATE VIRTUAL TABLE IF NOT EXISTS records_geo USING rtree(
+        id,
+        minLat, maxLat,
+        minLon, maxLon
+      );
+
+      CREATE TRIGGER IF NOT EXISTS records_after_insert AFTER INSERT ON records BEGIN
+        INSERT OR REPLACE INTO records_fts (id, text_summary, source, entity_type)
+        VALUES (new.id, new.text_summary, new.source, new.entity_type);
+        INSERT OR REPLACE INTO records_geo (id, minLat, maxLat, minLon, maxLon)
+        SELECT new.id, new.lat, new.lat, new.lon, new.lon
+        WHERE new.lat IS NOT NULL AND new.lon IS NOT NULL;
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS records_after_update AFTER UPDATE ON records BEGIN
+        INSERT OR REPLACE INTO records_fts (rowid, id, text_summary, source, entity_type)
+        VALUES ((SELECT rowid FROM records_fts WHERE id = old.id), new.id, new.text_summary, new.source, new.entity_type);
+        DELETE FROM records_geo WHERE id = old.id;
+        INSERT OR REPLACE INTO records_geo (id, minLat, maxLat, minLon, maxLon)
+        SELECT new.id, new.lat, new.lat, new.lon, new.lon
+        WHERE new.lat IS NOT NULL AND new.lon IS NOT NULL;
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS records_after_delete AFTER DELETE ON records BEGIN
+        DELETE FROM records_fts WHERE id = old.id;
+        DELETE FROM records_geo WHERE id = old.id;
+      END;
+    `);
   }
 
-  private rebuildIndexes(): void {
-    this.bySource.clear();
-    this.fts.clear();
-
-    for (const record of this.records.values()) {
-      const sourceKey = `${record.source_type}:${record.source_id}`;
-      const list = this.bySource.get(sourceKey) ?? [];
-      list.push(record.id);
-      this.bySource.set(sourceKey, list);
-
-      for (const token of tokensFor(record)) {
-        const ids = this.fts.get(token) ?? new Set<string>();
-        ids.add(record.id);
-        this.fts.set(token, ids);
-      }
-    }
-
-    for (const key of this.bySource.keys()) {
-      const ordered = (this.bySource.get(key) ?? []).sort((a, b) => {
-        const ra = this.records.get(a);
-        const rb = this.records.get(b);
-        return (rb?.fetched_at ?? '').localeCompare(ra?.fetched_at ?? '');
-      });
-      this.bySource.set(key, ordered);
-    }
-  }
-
-  private async ensureDir(): Promise<void> {
-    const slash = STORAGE_PATH.lastIndexOf('/');
-    if (slash > 0) {
-      await mkdir(STORAGE_PATH.slice(0, slash), { recursive: true });
-    }
-  }
-
-  private async flush(): Promise<void> {
-    await this.ensureDir();
-    const body = Array.from(this.records.values())
-      .sort((a, b) => a.fetched_at.localeCompare(b.fetched_at))
-      .map((r) => JSON.stringify(r))
-      .join('\n');
-    await writeFile(STORAGE_PATH, body ? `${body}\n` : '', 'utf8');
+  private getDb(): import('node:sqlite').DatabaseSync {
+    if (!this.db) throw new Error('Record DB not initialized');
+    return this.db;
   }
 
   private dedupeKey(record: UniversalRecord): string {
@@ -90,162 +123,235 @@ export class UniversalRecordStore {
   }
 
   async ingest(input: UniversalRecord | UniversalRecord[]): Promise<{ inserted: number }> {
-    await this.ensureLoaded();
+    await this.ensureReady();
+    const db = this.getDb();
+
     const incoming = Array.isArray(input) ? input : [input];
-    const existingByDedupe = new Map<string, string>();
-    for (const rec of this.records.values()) {
-      existingByDedupe.set(this.dedupeKey(rec), rec.id);
+    const existing = new Set<string>();
+    const existingRows = db.prepare('SELECT id, raw_json, source FROM records').all() as Array<{ id: string; raw_json: string; source: string }>;
+    for (const row of existingRows) {
+      const [source_type = '', source_id = ''] = String(row.source).split(':');
+      existing.add(`${source_type}|${source_id}|||${hashString(row.raw_json)}`);
     }
 
     let inserted = 0;
-    for (const record of incoming) {
-      const key = this.dedupeKey(record);
-      if (existingByDedupe.has(key)) continue;
-      this.records.set(record.id, record);
-      existingByDedupe.set(key, record.id);
-      inserted++;
+    const upsert = db.prepare(`
+      INSERT INTO records (id, source, entity_type, timestamp, lat, lon, text_summary, raw_json, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        source=excluded.source,
+        entity_type=excluded.entity_type,
+        timestamp=excluded.timestamp,
+        lat=excluded.lat,
+        lon=excluded.lon,
+        text_summary=excluded.text_summary,
+        raw_json=excluded.raw_json
+    `);
+
+    db.exec('BEGIN');
+    try {
+      for (const record of incoming) {
+        const key = this.dedupeKey(record);
+        if (existing.has(key)) continue;
+
+        upsert.run(
+          record.id,
+          toSource(record),
+          record.entity_type ?? record.source_type,
+          toTimestampMs(record),
+          record.geo_lat ?? null,
+          record.geo_lon ?? null,
+          [record.title, record.text, record.url].filter(Boolean).join(' ').trim() || '',
+          record.raw_json,
+          Date.now(),
+        );
+        existing.add(key);
+        inserted++;
+      }
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
     }
 
-    await this.cleanup();
-    await this.flush();
-    this.rebuildIndexes();
-
-    if (inserted > 0) {
-      const index = getSQLiteRecordIndex();
-      index.enqueue(incoming.filter((record) => this.records.has(record.id)));
+    this.insertsSinceCleanup += inserted;
+    if (this.insertsSinceCleanup >= CLEANUP_EVERY_INSERTS) {
+      runRecordsCleanup(db);
+      this.insertsSinceCleanup = 0;
     }
 
     return { inserted };
   }
 
   async getById(id: string): Promise<UniversalRecord | null> {
-    await this.ensureLoaded();
-    return this.records.get(id) ?? null;
-  }
+    await this.ensureReady();
+    const db = this.getDb();
 
-  private searchInMemory(filters: RecordSearchFilters): UniversalRecord[] {
-    let ids: Set<string> | null = null;
+    const row = db.prepare('SELECT * FROM records WHERE id = ?').get(id) as {
+      id: string;
+      source: string;
+      entity_type: string | null;
+      timestamp: number;
+      lat: number | null;
+      lon: number | null;
+      text_summary: string;
+      raw_json: string;
+    } | undefined;
 
-    if (filters.q && filters.q.trim()) {
-      const tokens = filters.q.toLowerCase().split(/\s+/).map((t) => t.trim()).filter(Boolean);
-      for (const token of tokens) {
-        const set = this.fts.get(token) ?? new Set<string>();
-        ids = ids ? new Set(Array.from(ids).filter((id) => set.has(id))) : new Set(set);
-      }
-      if (!ids) ids = new Set();
-    }
+    if (!row) return null;
+    const [source_type = '', source_id = ''] = String(row.source).split(':');
 
-    let rows = Array.from(this.records.values()).filter((row) => !ids || ids.has(row.id));
-    if (filters.source_type) rows = rows.filter((r) => r.source_type === filters.source_type);
-    if (filters.source_id) rows = rows.filter((r) => r.source_id === filters.source_id);
-    if (filters.from) rows = rows.filter((r) => r.fetched_at >= filters.from!);
-    if (filters.to) rows = rows.filter((r) => r.fetched_at <= filters.to!);
-
-    rows.sort((a, b) => b.fetched_at.localeCompare(a.fetched_at));
-    const offset = Math.max(0, filters.offset ?? 0);
-    const limit = Math.max(1, Math.min(500, filters.limit ?? 50));
-    return rows.slice(offset, offset + limit);
+    const aux = extractTitleUrl(row.raw_json);
+    return {
+      id: row.id,
+      source_type,
+      source_id,
+      entity_type: row.entity_type ?? undefined,
+      fetched_at: new Date(row.timestamp).toISOString(),
+      published_at: new Date(row.timestamp).toISOString(),
+      timestamp: row.timestamp,
+      title: aux.title,
+      url: aux.url,
+      text: row.text_summary,
+      geo_lat: row.lat ?? undefined,
+      geo_lon: row.lon ?? undefined,
+      raw_json: row.raw_json,
+    };
   }
 
   async search(filters: RecordSearchFilters): Promise<UniversalRecord[]> {
-    await this.ensureLoaded();
+    await this.ensureReady();
+    const db = this.getDb();
 
-    const index = getSQLiteRecordIndex();
-    const indexedIds = await index.searchIds(filters);
-    if (indexedIds) {
-      const rows = indexedIds.map((id) => this.records.get(id)).filter((row): row is UniversalRecord => Boolean(row));
-      if (rows.length > 0 || !filters.q) return rows;
+    const clauses: string[] = [];
+    const params: Array<string | number> = [];
+
+    const sourceFilter = filters.source ?? (filters.source_type && filters.source_id ? `${filters.source_type}:${filters.source_id}` : undefined);
+    if (sourceFilter) {
+      clauses.push('r.source = ?');
+      params.push(sourceFilter);
+    } else if (filters.source_type) {
+      clauses.push('r.source LIKE ?');
+      params.push(`${filters.source_type}:%`);
     }
 
-    return this.searchInMemory(filters);
+    if (filters.entity_type) {
+      clauses.push('r.entity_type = ?');
+      params.push(filters.entity_type);
+    }
+
+    const startTime = filters.start_time ?? (filters.from ? Date.parse(filters.from) : undefined);
+    const endTime = filters.end_time ?? (filters.to ? Date.parse(filters.to) : undefined);
+    if (typeof startTime === 'number' && Number.isFinite(startTime)) {
+      clauses.push('r.timestamp >= ?');
+      params.push(startTime);
+    }
+    if (typeof endTime === 'number' && Number.isFinite(endTime)) {
+      clauses.push('r.timestamp <= ?');
+      params.push(endTime);
+    }
+
+    if (
+      typeof filters.min_lat === 'number' && typeof filters.max_lat === 'number'
+      && typeof filters.min_lon === 'number' && typeof filters.max_lon === 'number'
+    ) {
+      clauses.push('r.id IN (SELECT id FROM records_geo WHERE minLat >= ? AND maxLat <= ? AND minLon >= ? AND maxLon <= ?)');
+      params.push(filters.min_lat, filters.max_lat, filters.min_lon, filters.max_lon);
+    }
+
+    const limit = Math.max(1, Math.min(500, filters.limit ?? 100));
+    const offset = Math.max(0, filters.offset ?? 0);
+
+    const whereTail = clauses.length ? ` AND ${clauses.join(' AND ')}` : '';
+    let sql = '';
+    let queryParams: Array<string | number> = [];
+
+    if (filters.q && filters.q.trim()) {
+      sql = `
+        SELECT r.*
+        FROM records_fts f
+        JOIN records r ON r.id = f.id
+        WHERE f.records_fts MATCH ?${whereTail}
+        ORDER BY r.timestamp DESC
+        LIMIT ? OFFSET ?
+      `;
+      queryParams = [filters.q.trim(), ...params, limit, offset];
+    } else {
+      sql = `
+        SELECT r.*
+        FROM records r
+        WHERE 1=1${whereTail}
+        ORDER BY r.timestamp DESC
+        LIMIT ? OFFSET ?
+      `;
+      queryParams = [...params, limit, offset];
+    }
+
+    let rows = db.prepare(sql).all(...queryParams) as Array<{
+      id: string;
+      source: string;
+      entity_type: string | null;
+      timestamp: number;
+      lat: number | null;
+      lon: number | null;
+      text_summary: string;
+      raw_json: string;
+    }>;
+
+    if (typeof filters.lat === 'number' && typeof filters.lon === 'number' && typeof filters.radius_km === 'number') {
+      rows = rows.filter((row) => row.lat != null && row.lon != null
+        && haversineKm(filters.lat!, filters.lon!, row.lat, row.lon) <= filters.radius_km!);
+    }
+
+    return rows.map((row) => {
+      const [source_type = '', source_id = ''] = String(row.source).split(':');
+      const aux = extractTitleUrl(row.raw_json);
+      return {
+        id: row.id,
+        source_type,
+        source_id,
+        entity_type: row.entity_type ?? undefined,
+        fetched_at: new Date(row.timestamp).toISOString(),
+        published_at: new Date(row.timestamp).toISOString(),
+        timestamp: row.timestamp,
+        title: aux.title,
+        url: aux.url,
+        text: row.text_summary,
+        geo_lat: row.lat ?? undefined,
+        geo_lon: row.lon ?? undefined,
+        raw_json: row.raw_json,
+      } satisfies UniversalRecord;
+    });
   }
 
   async cleanup(): Promise<{ removed: number }> {
-    await this.ensureLoaded();
-    const allBeforeCleanup = new Set(this.records.keys());
-    let removed = 0;
-    const now = Date.now();
-    const retentionMs = Math.max(1, RETENTION_DAYS) * 24 * 60 * 60 * 1000;
-
-    for (const record of Array.from(this.records.values())) {
-      if (now - Date.parse(record.fetched_at) > retentionMs) {
-        this.records.delete(record.id);
-        removed++;
-      }
-    }
-
-    this.rebuildIndexes();
-
-    for (const [sourceKey, ids] of this.bySource.entries()) {
-      if (ids.length <= MAX_PER_SOURCE) continue;
-      const overflow = ids.slice(MAX_PER_SOURCE);
-      for (const id of overflow) {
-        if (this.records.delete(id)) removed++;
-      }
-      this.bySource.set(sourceKey, ids.slice(0, MAX_PER_SOURCE));
-    }
-
-    if (this.records.size > MAX_TOTAL) {
-      const ordered = Array.from(this.records.values()).sort((a, b) => b.fetched_at.localeCompare(a.fetched_at));
-      const keepIds = new Set(ordered.slice(0, MAX_TOTAL).map((r) => r.id));
-      for (const id of Array.from(this.records.keys())) {
-        if (!keepIds.has(id) && this.records.delete(id)) removed++;
-      }
-    }
-
-    if (DISK_BUDGET_BYTES > 0) {
-      await this.flush();
-      try {
-        const details = await stat(STORAGE_PATH);
-        if (details.size > DISK_BUDGET_BYTES) {
-          const ordered = Array.from(this.records.values()).sort((a, b) => b.fetched_at.localeCompare(a.fetched_at));
-          while (ordered.length > 0) {
-            const last = ordered.pop();
-            if (!last) break;
-            this.records.delete(last.id);
-            removed++;
-            await this.flush();
-            const next = await stat(STORAGE_PATH);
-            if (next.size <= DISK_BUDGET_BYTES) break;
-          }
-        }
-      } catch {
-        // ignore
-      }
-    }
-
-    const remaining = new Set(this.records.keys());
-    const removedIds = Array.from(allBeforeCleanup).filter((id) => !remaining.has(id));
-
-    this.rebuildIndexes();
-    await getSQLiteRecordIndex().cleanupIndexedIds(removedIds);
-    return { removed };
+    await this.ensureReady();
+    const db = this.getDb();
+    return runRecordsCleanup(db);
   }
 
   async stats(): Promise<{ total: number; perSource: Record<string, number>; estimatedBytes: number; total_records: number; jsonl_size_bytes: number; sqlite_size_bytes: number; index_enabled: boolean }> {
-    await this.ensureLoaded();
+    await this.ensureReady();
+    const db = this.getDb();
+
     const perSource: Record<string, number> = {};
-    for (const record of this.records.values()) {
-      perSource[record.source_type] = (perSource[record.source_type] ?? 0) + 1;
+    const rows = db.prepare('SELECT source, COUNT(1) AS c FROM records GROUP BY source').all() as Array<{ source: string; c: number }>;
+    for (const row of rows) {
+      const [sourceType = 'unknown'] = String(row.source).split(':');
+      perSource[sourceType] = (perSource[sourceType] ?? 0) + Number(row.c ?? 0);
     }
 
-    let estimatedBytes = 0;
-    try {
-      estimatedBytes = (await stat(STORAGE_PATH)).size;
-    } catch {
-      estimatedBytes = 0;
-    }
-
-    const sqliteStats = await getSQLiteRecordIndex().stats();
+    const total = Number((db.prepare('SELECT COUNT(1) AS c FROM records').get() as { c: number }).c ?? 0);
+    const sqliteSize = (await stat(DB_PATH)).size;
 
     return {
-      total: this.records.size,
+      total,
       perSource,
-      estimatedBytes,
-      total_records: this.records.size,
-      jsonl_size_bytes: estimatedBytes,
-      sqlite_size_bytes: sqliteStats.sqlite_size_bytes,
-      index_enabled: sqliteStats.index_enabled,
+      estimatedBytes: sqliteSize,
+      total_records: total,
+      jsonl_size_bytes: 0,
+      sqlite_size_bytes: sqliteSize,
+      index_enabled: true,
     };
   }
 }

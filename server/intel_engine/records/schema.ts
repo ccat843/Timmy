@@ -5,8 +5,10 @@ export const recordSchema = z.object({
   id: z.string(),
   source_id: z.string(),
   source_type: z.string(),
+  entity_type: z.string().optional(),
   fetched_at: z.string(),
   published_at: z.string().optional(),
+  timestamp: z.number().optional(),
   title: z.string().optional(),
   text: z.string().optional(),
   url: z.string().optional(),
@@ -20,8 +22,19 @@ export type UniversalRecord = import('zod').infer<typeof recordSchema>;
 
 export interface RecordSearchFilters {
   q?: string;
+  source?: string;
   source_type?: string;
   source_id?: string;
+  entity_type?: string;
+  lat?: number;
+  lon?: number;
+  radius_km?: number;
+  min_lat?: number;
+  min_lon?: number;
+  max_lat?: number;
+  max_lon?: number;
+  start_time?: number;
+  end_time?: number;
   from?: string;
   to?: string;
   limit?: number;

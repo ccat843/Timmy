@@ -81,8 +81,10 @@ export interface UniversalRecord {
   id: string;
   source_id: string;
   source_type: string;
+  entity_type?: string;
   fetched_at: string;
   published_at?: string;
+  timestamp?: number;
   title?: string;
   text?: string;
   url?: string;
@@ -92,12 +94,54 @@ export interface UniversalRecord {
   raw_json: string;
 }
 
-export interface RecordSearchFilters {
-  q?: string;
+
+export interface InvestigationQuery {
+  text?: string;
   source_type?: string;
   source_id?: string;
+  entity_type?: string;
+  entity_id?: string;
+  related_to_entity_id?: string;
+  relationship_type?: string;
   from?: string;
   to?: string;
+  lat?: number;
+  lon?: number;
+  radius_km?: number;
+  min_lat?: number;
+  min_lon?: number;
+  max_lat?: number;
+  max_lon?: number;
+  limit?: number;
+  offset?: number;
+  include_graph?: boolean;
+}
+
+export interface InvestigationResult {
+  plan: { steps: string[]; estimatedCost: 'low' | 'medium' | 'high' };
+  records: UniversalRecord[];
+  entities: Array<{ id: string; entity_type: string; canonical_name: string; first_seen: number; last_seen: number; metadata_json: string }>;
+  relationships: Array<{ id: string; entity_a: string; entity_b: string; relationship_type: string; confidence: number }>;
+  graph?: { nodes: Array<Record<string, unknown>>; edges: Array<Record<string, unknown>> };
+}
+
+export interface RecordSearchFilters {
+  q?: string;
+  source?: string;
+  source_type?: string;
+  source_id?: string;
+  entity_type?: string;
+  from?: string;
+  to?: string;
+  start_time?: number;
+  end_time?: number;
+  lat?: number;
+  lon?: number;
+  radius_km?: number;
+  min_lat?: number;
+  min_lon?: number;
+  max_lat?: number;
+  max_lon?: number;
   limit?: number;
   offset?: number;
 }
@@ -227,10 +271,21 @@ export async function getIntelHealth(): Promise<{ ok: boolean; storedObservation
 export async function searchRecords(filters: RecordSearchFilters = {}): Promise<{ ok: boolean; records: UniversalRecord[]; error?: string }> {
   const result = await fetchJsonWithTimeout<{ records?: UniversalRecord[] }>(buildIntelUrl('/api/intel/records/search', {
     q: filters.q,
+    source: filters.source,
     source_type: filters.source_type,
     source_id: filters.source_id,
+    entity_type: filters.entity_type,
     from: filters.from,
     to: filters.to,
+    start_time: filters.start_time !== undefined ? String(filters.start_time) : undefined,
+    end_time: filters.end_time !== undefined ? String(filters.end_time) : undefined,
+    lat: filters.lat !== undefined ? String(filters.lat) : undefined,
+    lon: filters.lon !== undefined ? String(filters.lon) : undefined,
+    radius_km: filters.radius_km !== undefined ? String(filters.radius_km) : undefined,
+    min_lat: filters.min_lat !== undefined ? String(filters.min_lat) : undefined,
+    min_lon: filters.min_lon !== undefined ? String(filters.min_lon) : undefined,
+    max_lat: filters.max_lat !== undefined ? String(filters.max_lat) : undefined,
+    max_lon: filters.max_lon !== undefined ? String(filters.max_lon) : undefined,
     limit: filters.limit !== undefined ? String(filters.limit) : undefined,
     offset: filters.offset !== undefined ? String(filters.offset) : undefined,
   }));
@@ -268,4 +323,25 @@ export async function getRecordStats(): Promise<{ ok: boolean; total?: number; p
   const result = await fetchJsonWithTimeout<{ total: number; perSource: Record<string, number>; estimatedBytes: number }>(buildIntelUrl('/api/intel/records/stats'));
   if (!result.ok) return { ok: false, error: result.error };
   return { ok: true, total: result.data?.total, perSource: result.data?.perSource, estimatedBytes: result.data?.estimatedBytes };
+}
+
+
+export async function queryInvestigation(payload: InvestigationQuery): Promise<{ ok: boolean; result?: InvestigationResult; error?: string }> {
+  const result = await fetchJsonWithTimeout<InvestigationResult>(buildIntelUrl('/api/intel/investigation/query'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!result.ok) return { ok: false, error: result.error };
+  return { ok: true, result: result.data };
+}
+
+export async function askInvestigation(question: string): Promise<{ ok: boolean; structured_query?: InvestigationQuery; result?: InvestigationResult; error?: string }> {
+  const result = await fetchJsonWithTimeout<{ structured_query: InvestigationQuery; result: InvestigationResult }>(buildIntelUrl('/api/intel/investigation/ask'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ question }),
+  });
+  if (!result.ok) return { ok: false, error: result.error };
+  return { ok: true, structured_query: result.data?.structured_query, result: result.data?.result };
 }

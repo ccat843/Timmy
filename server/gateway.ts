@@ -37,25 +37,8 @@ const TIER_HEADERS: Record<CacheTier, string> = {
 };
 
 
-const RECORD_CAPTURE_SKIP_PATTERNS: RegExp[] = [
-  /\/health$/i,
-  /\/status$/i,
-  /\/heartbeat$/i,
-  /\/metrics$/i,
-  /\/intel\//i,
-];
-
-const RECORD_CAPTURE_SKIP_PATHS = new Set<string>([
-  '/api/news/v1/list-feed-digest',
-  '/api/intelligence/v1/get-risk-scores',
-  '/api/intelligence/v1/get-pizzint-status',
-]);
-
 function shouldCaptureForRecordIngest(pathname: string): boolean {
-  if (!pathname.startsWith('/api/')) return false;
-  if (pathname.startsWith('/api/intel/records/')) return false;
-  if (RECORD_CAPTURE_SKIP_PATHS.has(pathname)) return false;
-  return !RECORD_CAPTURE_SKIP_PATTERNS.some((pattern) => pattern.test(pathname));
+  return pathname.startsWith('/api/') && !pathname.startsWith('/api/intel/records/');
 }
 
 const RPC_CACHE_TIER: Record<string, CacheTier> = {

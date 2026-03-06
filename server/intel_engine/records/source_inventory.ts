@@ -7,6 +7,11 @@
  *
  * NOTE: This file intentionally lists every worldmonitor domain handler path so
  * coverage can be audited when upstream adds/removes domains.
+ *
+ * Normalization coverage report:
+ * - Server passive capture for all API handlers: server/gateway.ts -> records/normalize.ts
+ * - Browser-only items: src/intel_bridge/normalize_all_sources.ts via records_emitter.ts
+ * - Investigation/query layer consumers: server/intel_engine/investigation/* uses records + entities stores only
  */
 
 export interface SourceInventoryItem {
