@@ -87,6 +87,9 @@ import { ingestHeadlines } from '@/services/trending-keywords';
 import type { ListFeedDigestResponse } from '@/generated/client/worldmonitor/news/v1/service_client';
 import type { GetSectorSummaryResponse, ListMarketQuotesResponse } from '@/generated/client/worldmonitor/market/v1/service_client';
 import { mountCommunityWidget } from '@/components/CommunityWidget';
+import { emitObservations } from '@/intel_bridge/emitter';
+import { normalizeFlightDelays, normalizeNaturalEvents, normalizeNewsItems } from '@/intel_bridge/normalize';
+import { emitSourceRecords } from '@/intel_bridge/records_emitter';
 import { ResearchServiceClient } from '@/generated/client/worldmonitor/research/v1/service_client';
 import {
   MarketPanel,
@@ -899,6 +902,8 @@ export class DataLoaderManager implements AppModule {
     }
 
     this.ctx.allNews = collectedNews;
+    emitObservations(normalizeNewsItems(collectedNews));
+    emitSourceRecords('frontend-news-panels', collectedNews, 'news-panels');
     this.ctx.initialLoadComplete = true;
     mountCommunityWidget();
     updateAndCheck([
@@ -1124,6 +1129,8 @@ export class DataLoaderManager implements AppModule {
         itemCount: eonetResult.value.length,
       });
       this.ctx.statusPanel?.updateApi('NASA EONET', { status: 'ok' });
+      emitObservations(normalizeNaturalEvents(eonetResult.value));
+      emitSourceRecords('natural', eonetResult.value, 'nasa-eonet');
     } else {
       this.ctx.map?.setNaturalEvents([]);
       this.ctx.statusPanel?.updateFeed('EONET', { status: 'error', errorMessage: String(eonetResult.reason) });
@@ -1738,6 +1745,8 @@ export class DataLoaderManager implements AppModule {
         itemCount: delays.length,
       });
       this.ctx.statusPanel?.updateApi('FAA', { status: 'ok' });
+      emitObservations(normalizeFlightDelays(delays));
+      emitSourceRecords('aviation', delays, 'faa-delays');
     } catch (error) {
       this.ctx.map?.setLayerReady('flights', false);
       this.ctx.statusPanel?.updateFeed('Flights', { status: 'error', errorMessage: String(error) });

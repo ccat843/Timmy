@@ -3,8 +3,14 @@
     "target": "ES2020",
     "useDefineForClassFields": true,
     "module": "ESNext",
-    "lib": ["ES2020", "DOM", "DOM.Iterable"],
-    "types": ["vite/client"],
+    "lib": [
+      "ES2020",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    "types": [
+      "vite/client"
+    ],
     "skipLibCheck": true,
     "moduleResolution": "bundler",
     "allowImportingTsExtensions": true,
@@ -20,9 +26,18 @@
     "esModuleInterop": true,
     "baseUrl": ".",
     "paths": {
-      "@/*": ["src/*"]
+      "@/*": [
+        "src/*"
+      ],
+      "zod": [
+        "src/extensions/zod-shim.ts"
+      ]
     }
   },
-  "include": ["src"],
-  "exclude": ["src/workers/ml.worker.ts"]
+  "include": [
+    "src"
+  ],
+  "exclude": [
+    "src/workers/ml.worker.ts"
+  ]
 }

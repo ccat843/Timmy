@@ -8,6 +8,7 @@ import { analysisWorker, enrichWithVelocityML, getClusterAssetContext, MAX_DISTA
 import { getSourcePropagandaRisk, getSourceTier, getSourceType } from '@/config/feeds';
 import { SITE_VARIANT } from '@/config';
 import { t, getCurrentLanguage } from '@/services/i18n';
+import { saveFeedItemToCase } from '@/intel/ui/CasesPanel';
 
 /** Threshold for enabling virtual scrolling */
 const VIRTUAL_SCROLL_THRESHOLD = 15;
@@ -358,6 +359,7 @@ export class NewsPanel extends Panel {
         <div class="item-time">
           ${formatTime(item.pubDate)}
           ${getCurrentLanguage() !== 'en' ? `<button class="item-translate-btn" title="Translate" data-text="${escapeHtml(item.title)}">文</button>` : ''}
+          <button class="item-save-case-btn" title="Save to Case" data-save-case="1" data-save-source="${escapeHtml(item.source)}" data-save-title="${escapeHtml(item.title)}" data-save-url="${escapeHtml(item.link)}">💾</button>
         </div>
       </div>
     `
@@ -565,6 +567,7 @@ export class NewsPanel extends Panel {
           <span class="top-sources">${topSourcesHtml}</span>
           <span class="item-time">${formatTime(cluster.lastUpdated)}</span>
           ${getCurrentLanguage() !== 'en' ? `<button class="item-translate-btn" title="Translate" data-text="${escapeHtml(cluster.primaryTitle)}">文</button>` : ''}
+          <button class="item-save-case-btn" title="Save to Case" data-save-case="1" data-save-source="${escapeHtml(cluster.primarySource)}" data-save-title="${escapeHtml(cluster.primaryTitle)}" data-save-url="${escapeHtml(cluster.primaryLink)}">💾</button>
         </div>
         ${relatedAssetsHtml}
       </div>
@@ -611,6 +614,26 @@ export class NewsPanel extends Panel {
         e.stopPropagation();
         const text = btn.dataset.text;
         if (text) this.handleTranslate(btn, text);
+      });
+    });
+
+    const saveBtns = this.content.querySelectorAll<HTMLElement>('.item-save-case-btn');
+    saveBtns.forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        void saveFeedItemToCase({
+          sourceId: btn.dataset.saveSource ?? this.panelId,
+          title: btn.dataset.saveTitle ?? 'Untitled',
+          url: btn.dataset.saveUrl,
+          summary: undefined,
+          raw: {
+            panelId: this.panelId,
+            sourceId: btn.dataset.saveSource,
+            title: btn.dataset.saveTitle,
+            url: btn.dataset.saveUrl,
+            savedAt: new Date().toISOString(),
+          },
+        });
       });
     });
   }
